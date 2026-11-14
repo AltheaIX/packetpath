@@ -1,20 +1,21 @@
 package main
 
 import (
-	"encoding/binary"
+	"flag"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"syscall"
 
 	"github.com/one-api/godivert"
 	"github.com/one-api/godivert/types"
-	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/windows"
 )
 
 var (
-	flowMap sync.Map
+	flowMap    sync.Map
+	reverseMap sync.Map
 )
 
 func makeFlowKey(protocol uint8, srcIp string, srcPort uint16, dstIp string, dstPort uint16) string {
@@ -45,7 +46,7 @@ func listenFlows(divert *godivert.Divert) {
 
 		processName := getProcessName(flowData.ProcessId)
 
-		if processName != "AION2.exe" {
+		if processName != "curl.exe" {
 			continue
 		}
 
@@ -58,9 +59,9 @@ func listenFlows(divert *godivert.Divert) {
 			continue
 		}
 
-		if remotePort == 443 {
-			continue
-		}
+		//if remotePort == 443 {
+		//	continue
+		//}
 
 		key := makeFlowKey(6, localAddr, localPort, remoteAddr, remotePort)
 
@@ -73,6 +74,14 @@ func listenFlows(divert *godivert.Divert) {
 }
 
 func main() {
+	redirectIpPtr := flag.String("redirect_ip", "127.0.0.1", "ip of traffic to be redirected")
+	relayIpPtr := flag.String("ip", "127.0.0.1", "relay ip")
+	flag.Parse()
+
+	relayIp := *relayIpPtr
+	redirectIp := *redirectIpPtr
+	fmt.Printf("Redirecting Traffic %s from Traffic Redirected to %s\n", redirectIp, relayIp)
+
 	flowHandle, err := godivert.New("tcp", godivert.LayerFlow, 0, 0)
 	if err != nil {
 		log.Fatal(err)
@@ -80,7 +89,8 @@ func main() {
 	defer flowHandle.Close()
 	go listenFlows(flowHandle)
 
-	netHandle, err := godivert.New("outbound and tcp", godivert.LayerNetwork, 0, 0)
+	filter := "!loopback and tcp"
+	netHandle, err := godivert.New(filter, godivert.LayerNetwork, 0, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -96,37 +106,43 @@ func main() {
 			continue
 		}
 
-		showPacketInfo(packet[:readLen])
+		if readLen < 20 {
+			netHandle.Send(packet[:readLen], &addr)
+			continue
+		}
+
+		if addr.Outbound() {
+			dstIp := packet[16:20]
+			ip := fmt.Sprintf("%d.%d.%d.%d", dstIp[0], dstIp[1], dstIp[2], dstIp[3])
+			if ip == redirectIp {
+				fmt.Println("[+] Outbound", packet[:readLen])
+				newIP := net.ParseIP(relayIp).To4()
+				copy(packet[16:20], newIP)
+				godivert.CalcChecksums(packet[:readLen], 0)
+				fmt.Println("[+] Modified Outbound", packet[:readLen])
+
+				addr.SetTCPChecksum(false)
+				addr.SetIPChecksum(false)
+			}
+
+			netHandle.Send(packet[:readLen], &addr)
+			continue
+		}
+
+		//srcIp := packet[12:16]
+		//ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
+		//if ip == "" {
+		//	fmt.Println("[+] Inbound", packet[:readLen])
+		//
+		//	originalServerIp := []byte{}
+		//	copy(packet[12:16], originalServerIp)
+		//
+		//	godivert.CalcChecksums(packet[:readLen], 0)
+		//
+		//	fmt.Println("[+] Modified Inbound (Spoofed as Original Server):", packet[:readLen])
+		//}
 
 		netHandle.Send(packet[:readLen], &addr)
-	}
-}
-
-func showPacketInfo(packet []byte) {
-	iph, err := ipv4.ParseHeader(packet)
-	if err != nil {
-		fmt.Printf("Error parsing IPv4: %v\n", err)
-		return
-	}
-
-	payload := packet[iph.Len:]
-
-	if iph.Protocol != 6 {
-		return
-	}
-
-	var srcPort uint16
-	var dstPort uint16
-
-	if len(payload) >= 20 {
-		srcPort = binary.BigEndian.Uint16(payload[0:2])
-		dstPort = binary.BigEndian.Uint16(payload[2:4])
-	}
-
-	key := makeFlowKey(6, iph.Src.String(), srcPort, iph.Dst.String(), dstPort)
-
-	if _, ok := flowMap.Load(key); ok {
-		fmt.Println(key)
 	}
 }
 

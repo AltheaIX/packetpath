@@ -1,4 +1,4 @@
-module godivert-tcp
+module packetpath
 
 go 1.27
 
