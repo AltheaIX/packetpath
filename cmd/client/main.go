@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -115,11 +116,10 @@ func main() {
 			dstIp := packet[16:20]
 			ip := fmt.Sprintf("%d.%d.%d.%d", dstIp[0], dstIp[1], dstIp[2], dstIp[3])
 			if ip == redirectIp {
-				fmt.Println("[+] Outbound", packet[:readLen])
 				newIP := net.ParseIP(relayIp).To4()
 				copy(packet[16:20], newIP)
+				binary.BigEndian.PutUint16(packet[22:24], 8080)
 				godivert.CalcChecksums(packet[:readLen], 0)
-				fmt.Println("[+] Modified Outbound", packet[:readLen])
 
 				addr.SetTCPChecksum(false)
 				addr.SetIPChecksum(false)
@@ -129,18 +129,20 @@ func main() {
 			continue
 		}
 
-		//srcIp := packet[12:16]
-		//ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
-		//if ip == "" {
-		//	fmt.Println("[+] Inbound", packet[:readLen])
-		//
-		//	originalServerIp := []byte{}
-		//	copy(packet[12:16], originalServerIp)
-		//
-		//	godivert.CalcChecksums(packet[:readLen], 0)
-		//
-		//	fmt.Println("[+] Modified Inbound (Spoofed as Original Server):", packet[:readLen])
-		//}
+		srcIp := packet[12:16]
+		ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
+		if ip == relayIp {
+			fmt.Println("[+] Inbound", packet[:readLen])
+
+			copy(packet[12:16], net.ParseIP(redirectIp).To4())
+
+			godivert.CalcChecksums(packet[:readLen], 0)
+
+			addr.SetIPChecksum(false)
+			addr.SetTCPChecksum(false)
+
+			fmt.Println("[+] Modified Inbound (Spoofed as Original Server):", packet[:readLen])
+		}
 
 		netHandle.Send(packet[:readLen], &addr)
 	}
