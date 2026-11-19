@@ -130,8 +130,13 @@ func main() {
 
 		ihl := int(packet[0]&0x0f) * 4
 
+		if ihl < 20 || int(readLen) < ihl {
+			netHandle.Send(packet[:readLen], &addr)
+			continue
+		}
+
 		if addr.Outbound() {
-			dstIp := packet[16:ihl]
+			dstIp := packet[16:20]
 			ip := fmt.Sprintf("%d.%d.%d.%d", dstIp[0], dstIp[1], dstIp[2], dstIp[3])
 			if ip == redirectIp {
 				newIP := net.ParseIP(relayIp).To4()
