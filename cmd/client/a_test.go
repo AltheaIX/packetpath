@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -14,9 +13,12 @@ func TestIpv4ToString(t *testing.T) {
 	}
 }
 
-func TestAsd(t *testing.T) {
-	var x uint32 = 0xFF000000
+func TestIHLConversion(t *testing.T) {
+	data := []byte{69} // 0100 0101, Version: 4, Header Length: 20 bytes (5)
+	got := int(data[0]&0x0f) * 4
+	want := 20
 
-	fmt.Printf("a        = %032b  (%d)\n", x, x)
-	fmt.Printf("a        = %032b  (%d)\n", x<<7, x<<7)
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
 }
