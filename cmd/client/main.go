@@ -150,16 +150,12 @@ func main() {
 		srcIp := packet[12:16]
 		ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
 		if ip == relayIp {
-			fmt.Println("[+] Inbound", packet[:readLen])
-
 			copy(packet[12:16], net.ParseIP(redirectIp).To4())
 			binary.BigEndian.PutUint16(packet[ihl:ihl+2], redirectPort)
 			godivert.CalcChecksums(packet[:readLen], 0)
 
 			addr.SetIPChecksum(false)
 			addr.SetTCPChecksum(false)
-
-			fmt.Println("[+] Modified Inbound (Spoofed as Original Server):", packet[:readLen])
 		}
 
 		netHandle.Send(packet[:readLen], &addr)
