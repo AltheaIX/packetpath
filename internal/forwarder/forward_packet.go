@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"net"
 	"packetpath/internal/config"
+	"packetpath/internal/header"
 
 	"github.com/one-api/godivert"
 )
 
 type PacketContext struct {
-	IHL     int
-	ReadLen uint32
-	Packet  []byte
-	Addr    *godivert.Address
-	Conn    *godivert.Divert
-	Cfg     config.Config
+	IHL          int
+	TcpHeaderLen int
+	ReadLen      uint32
+	Packet       []byte
+	Addr         *godivert.Address
+	Conn         *godivert.Divert
+	Cfg          config.Config
 }
 
 func processOutbound(
@@ -23,17 +25,40 @@ func processOutbound(
 ) {
 	dstIp := ctx.Packet[16:20]
 	ip := fmt.Sprintf("%d.%d.%d.%d", dstIp[0], dstIp[1], dstIp[2], dstIp[3])
-	if ip == ctx.Cfg.RedirectIp {
-		newIP := net.ParseIP(ctx.Cfg.RelayIp).To4()
-		copy(ctx.Packet[16:20], newIP)
-		binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL+2:ctx.IHL+4], ctx.Cfg.RelayPort)
-		godivert.CalcChecksums(ctx.Packet[:ctx.ReadLen], 0)
-
-		ctx.Addr.SetTCPChecksum(false)
-		ctx.Addr.SetIPChecksum(false)
+	if ip != ctx.Cfg.RedirectIp {
+		ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
+		return
 	}
 
-	ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
+	newIP := net.ParseIP(ctx.Cfg.RelayIp).To4()
+	copy(ctx.Packet[16:20], newIP)
+	binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL+2:ctx.IHL+4], ctx.Cfg.RelayPort)
+
+	flags := ctx.Packet[ctx.IHL+13]
+	isSYN := flags&0x02 != 0
+
+	if isSYN {
+		err := header.ApplyHeader(
+			&ctx.Packet,
+			net.ParseIP(ctx.Cfg.RedirectIp).To4(),
+			ctx.Cfg.RedirectPort,
+			ctx.IHL,
+			ctx.TcpHeaderLen,
+		)
+
+		if err != nil {
+			fmt.Println("Error applying header ", err)
+			ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
+			return
+		}
+	}
+
+	newLen := len(ctx.Packet)
+	godivert.CalcChecksums(ctx.Packet[:newLen], 0)
+	ctx.Addr.SetTCPChecksum(false)
+	ctx.Addr.SetIPChecksum(false)
+
+	ctx.Conn.Send(ctx.Packet[:newLen], ctx.Addr)
 }
 
 func processInbound(
@@ -51,6 +76,7 @@ func processInbound(
 
 func Forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Divert, addr *godivert.Address) {
 	ihl := int(packet[0]&0x0f) * 4
+	tcpHeaderLen := int(packet[ihl+12]>>4) * 4
 
 	if ihl < 20 || int(readLen) < ihl {
 		conn.Send(packet[:readLen], addr)
@@ -58,7 +84,15 @@ func Forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Di
 	}
 
 	if addr.Outbound() {
-		ctx := &PacketContext{IHL: ihl, ReadLen: readLen, Packet: packet, Addr: addr, Conn: conn, Cfg: cfg}
+		ctx := &PacketContext{
+			IHL:          ihl,
+			TcpHeaderLen: tcpHeaderLen,
+			ReadLen:      readLen,
+			Packet:       packet,
+			Addr:         addr,
+			Conn:         conn,
+			Cfg:          cfg,
+		}
 		processOutbound(ctx)
 		return
 	}
@@ -66,7 +100,15 @@ func Forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Di
 	srcIp := packet[12:16]
 	ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
 	if ip == cfg.RelayIp {
-		ctx := &PacketContext{IHL: ihl, ReadLen: readLen, Packet: packet, Addr: addr, Conn: conn, Cfg: cfg}
+		ctx := &PacketContext{
+			IHL:          ihl,
+			TcpHeaderLen: tcpHeaderLen,
+			ReadLen:      readLen,
+			Packet:       packet,
+			Addr:         addr,
+			Conn:         conn,
+			Cfg:          cfg,
+		}
 		processInbound(ctx)
 		return
 	}
