@@ -180,3 +180,28 @@ func TestApplyHeader_WithoutAdditionalData(t *testing.T) {
 		t.Fatalf("want %d, got %d", want, got)
 	}
 }
+
+func TestCalcHeaderNumber_SeqNum(t *testing.T) {
+	p := []byte{0, 0, 0, 0, 0, 0, 0, 0} // tcp.seq and tcp.seq_raw are 4-bytes (uint32)
+	CalcHeaderNumber(p, 0, CalculateSeqNum)
+
+	want := 6
+	got := int(p[len(p)-1])
+
+	if want != got {
+		t.Fatalf("want %d, got %d", want, got)
+	}
+}
+
+func TestCalcHeaderNumber_AckNum(t *testing.T) {
+	p := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12} // tcp.ack and tcp.ack_raw are 4-bytes (uint32)
+	CalcHeaderNumber(p, 0, CalculateAckNum)
+	t.Log(p)
+
+	want := 6
+	got := int(p[len(p)-1])
+
+	if want != got {
+		t.Fatalf("want %d, got %d", want, got)
+	}
+}

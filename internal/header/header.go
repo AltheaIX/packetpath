@@ -6,6 +6,11 @@ import (
 )
 
 const (
+	CalculateSeqNum = uint8(0x01)
+	CalculateAckNum = uint8(0x02)
+)
+
+const (
 	CustomHeaderSize = 6
 )
 
@@ -64,4 +69,17 @@ func ApplyHeader(packet *[]byte, ip []byte, port uint16, ihl int, tcpHeaderLen i
 	}
 
 	return nil
+}
+
+// CalcHeaderNumber Helper to calculate and rewrite SeqNum or AckNum into packet after rewriting data frame for 6-byte custom header.
+func CalcHeaderNumber(packet []byte, ihl int, flag uint8) {
+	if (flag & CalculateSeqNum) != 0 {
+		seq := binary.BigEndian.Uint32(packet[ihl+4 : ihl+8])
+		seq += CustomHeaderSize
+		binary.BigEndian.PutUint32(packet[ihl+4:ihl+8], seq)
+	} else if (flag & CalculateAckNum) != 0 {
+		ack := binary.BigEndian.Uint32(packet[ihl+8 : ihl+12])
+		ack -= CustomHeaderSize
+		binary.BigEndian.PutUint32(packet[ihl+8:ihl+12], ack)
+	}
 }

@@ -80,9 +80,7 @@ func processOutbound(
 
 		headerSent.Store(key, true)
 	} else if alreadyHeaderized {
-		seq := binary.BigEndian.Uint32(ctx.Packet[ctx.IHL+4 : ctx.IHL+8])
-		seq += header.CustomHeaderSize
-		binary.BigEndian.PutUint32(ctx.Packet[ctx.IHL+4:ctx.IHL+8], seq)
+		header.CalcHeaderNumber(ctx.Packet, ctx.IHL, header.CalculateSeqNum)
 	}
 
 	isRST := flags&0x04 != 0
@@ -107,15 +105,20 @@ func processOutbound(
 func processInbound(
 	ctx *PacketContext,
 ) {
+	srcIp := ctx.Packet[12:16]
+	ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
+	if ip != ctx.Cfg.RelayIp {
+		ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
+		return
+	}
+
 	copy(ctx.Packet[12:16], net.ParseIP(ctx.Cfg.RedirectIp).To4())
 	binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL:ctx.IHL+2], ctx.Cfg.RedirectPort)
 
 	key := reverseKey(ctx.Packet, ctx.IHL)
 	_, wasHeaderized := headerSent.Load(key)
 	if wasHeaderized {
-		seq := binary.BigEndian.Uint32(ctx.Packet[ctx.IHL+8 : ctx.IHL+12])
-		seq -= header.CustomHeaderSize
-		binary.BigEndian.PutUint32(ctx.Packet[ctx.IHL+8:ctx.IHL+12], seq)
+		header.CalcHeaderNumber(ctx.Packet, ctx.IHL, header.CalculateAckNum)
 	}
 
 	godivert.CalcChecksums(ctx.Packet[:ctx.ReadLen], 0)
@@ -136,35 +139,20 @@ func Forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Di
 
 	tcpHeaderLen := int(packet[ihl+12]>>4) * 4
 
+	ctx := &PacketContext{
+		IHL:          ihl,
+		TcpHeaderLen: tcpHeaderLen,
+		ReadLen:      readLen,
+		Packet:       packet,
+		Addr:         addr,
+		Conn:         conn,
+		Cfg:          cfg,
+	}
+
 	if addr.Outbound() {
-		ctx := &PacketContext{
-			IHL:          ihl,
-			TcpHeaderLen: tcpHeaderLen,
-			ReadLen:      readLen,
-			Packet:       packet,
-			Addr:         addr,
-			Conn:         conn,
-			Cfg:          cfg,
-		}
 		processOutbound(ctx)
 		return
 	}
 
-	srcIp := packet[12:16]
-	ip := fmt.Sprintf("%d.%d.%d.%d", srcIp[0], srcIp[1], srcIp[2], srcIp[3])
-	if ip == cfg.RelayIp {
-		ctx := &PacketContext{
-			IHL:          ihl,
-			TcpHeaderLen: tcpHeaderLen,
-			ReadLen:      readLen,
-			Packet:       packet,
-			Addr:         addr,
-			Conn:         conn,
-			Cfg:          cfg,
-		}
-		processInbound(ctx)
-		return
-	}
-
-	conn.Send(packet[:readLen], addr)
+	processInbound(ctx)
 }
