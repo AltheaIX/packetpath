@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -9,9 +9,6 @@ import (
 )
 
 func main() {
-	targetSrvPtr := flag.String("target_server", "127.0.0.1:8080", "original destination of traffic")
-	targetSrv := *targetSrvPtr
-
 	listener, err := net.Listen("tcp", ":2323")
 	if err != nil {
 		log.Fatal(err)
@@ -29,14 +26,18 @@ func main() {
 		go func(c net.Conn) {
 			defer c.Close()
 
-			server, err := net.Dial("tcp", targetSrv)
-			if err != nil {
-				log.Printf("Failed to connect to server: %v\n", err)
+			header := make([]byte, 6)
+			if _, err := io.ReadFull(c, header); err != nil {
+				log.Printf("Failed to read header: %v\n", err)
 				return
 			}
-			defer server.Close()
 
-			log.Printf("Relaying %s <-> %s\n", c.RemoteAddr(), targetSrv)
+			origIp := net.IP(header[0:4])
+			origPort := binary.BigEndian.Uint16(header[4:6])
+			fmt.Printf("Relaying %s <-> %s\n", c.RemoteAddr(), origIp)
+
+			server, _ := net.Dial("tcp", fmt.Sprintf("%s:%d", origIp.String(), origPort))
+			defer server.Close()
 
 			go io.Copy(server, c)
 			io.Copy(c, server)
