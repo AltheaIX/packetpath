@@ -85,6 +85,13 @@ func processOutbound(
 		binary.BigEndian.PutUint32(ctx.Packet[ctx.IHL+4:ctx.IHL+8], seq)
 	}
 
+	isRST := flags&0x04 != 0
+	isFIN := flags&0x01 != 0
+
+	if isRST || isFIN {
+		headerSent.Delete(key)
+	}
+
 	newIP := net.ParseIP(ctx.Cfg.RelayIp).To4()
 	copy(ctx.Packet[16:20], newIP)
 	binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL+2:ctx.IHL+4], ctx.Cfg.RelayPort)
