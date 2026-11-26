@@ -6,10 +6,9 @@ import (
 )
 
 type Config struct {
-	RedirectIp   string
-	RedirectPort uint16
-	RelayIp      string
-	RelayPort    uint16
+	ProgramName string
+	RelayIp     string
+	RelayPort   uint16
 }
 
 func ParsePort(rawPort string) (uint16, error) {

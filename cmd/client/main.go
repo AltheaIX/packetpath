@@ -6,82 +6,57 @@ import (
 	"log"
 	"packetpath/internal/config"
 	"packetpath/internal/forwarder"
+	"packetpath/internal/header"
 	"packetpath/internal/interceptor"
 	"sync"
-
-	"github.com/one-api/godivert"
-	"github.com/one-api/godivert/types"
+	"time"
 )
 
-var (
-	flowMap sync.Map
-)
+func mapCounterHelper(Map *sync.Map) int {
+	mapLength := 0
 
-func makeFlowKey(protocol uint8, srcIp string, srcPort uint16, dstIp string, dstPort uint16) string {
-	return fmt.Sprintf("%v|%v|%v|%v|%v", protocol, srcIp, srcPort, dstIp, dstPort)
+	Map.Range(
+		func(key, value any) bool {
+			mapLength++
+			return true
+		},
+	)
+
+	return mapLength
 }
 
-func listenFlows(divert *godivert.Divert) {
-	fmt.Println("[+] Running flow listener...")
+func startMapWatcher() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	packet := make([]byte, 2048)
-	var addr godivert.Address
+	fmt.Println("[+] Map Watcher is on")
 
 	for {
-		_, err := divert.Recv(packet, &addr)
-		if err != nil {
-			log.Printf("Error receiving packet: %s", err)
-			continue
-		}
+		select {
+		case <-ticker.C:
+			socketMapLength := mapCounterHelper(&interceptor.SocketProgramMap)
+			headerSentLength := mapCounterHelper(&header.HeaderSent)
+			originTargetMapLength := mapCounterHelper(&forwarder.OriginTargetMap)
 
-		flowData := addr.Flow()
-		if flowData == nil || flowData.Protocol != 6 {
-			continue
-		}
-
-		if addr.IPv6() {
-			continue
-		}
-
-		processName := interceptor.GetProcessName(flowData.ProcessId)
-
-		if processName != "curl.exe" {
-			continue
-		}
-
-		localAddr := interceptor.Ipv4ToString(flowData.LocalAddr[0])
-		localPort := flowData.LocalPort
-		remoteAddr := interceptor.Ipv4ToString(flowData.RemoteAddr[0])
-		remotePort := flowData.RemotePort
-
-		if localAddr == remoteAddr {
-			continue
-		}
-
-		//if remotePort == 443 {
-		//	continue
-		//}
-
-		key := makeFlowKey(6, localAddr, localPort, remoteAddr, remotePort)
-
-		if addr.Event == uint8(types.EventFlowEstablished) {
-			flowMap.Store(key, processName)
-		} else if addr.Event == uint8(types.EventFlowDeleted) {
-			flowMap.Delete(key)
+			fmt.Printf(
+				"socketMapLength=%d, headerSentLength=%d, originTargetMapLength=%d\n",
+				socketMapLength,
+				headerSentLength,
+				originTargetMapLength,
+			)
 		}
 	}
 }
 
 func main() {
-	redirectIP := flag.String("redirect_ip", "127.0.0.1", "ip of traffic to be redirected")
-	redirectPortRaw := flag.String("redirect_port", "8080", "port of traffic to be redirected")
 	relayIP := flag.String("relay_ip", "127.0.0.1", "relay ip")
 	relayPortRaw := flag.String("relay_port", "8080", "relay port")
+	programName := flag.String("program", "", "program name with .exe")
+	debug := flag.Bool("debug", false, "debug mode")
 	flag.Parse()
 
-	redirectPort, err := config.ParsePort(*redirectPortRaw)
-	if err != nil {
-		log.Fatal(err)
+	if *debug {
+		go startMapWatcher()
 	}
 
 	relayPort, err := config.ParsePort(*relayPortRaw)
@@ -90,43 +65,13 @@ func main() {
 	}
 
 	cfg := config.Config{
-		RedirectIp:   *redirectIP,
-		RedirectPort: redirectPort,
-		RelayIp:      *relayIP,
-		RelayPort:    relayPort,
+		ProgramName: *programName,
+		RelayIp:     *relayIP,
+		RelayPort:   relayPort,
 	}
 
-	fmt.Printf("Traffic From %s will be Redirected to %s\n", cfg.RedirectIp, cfg.RelayIp)
+	fmt.Printf("Traffic From %s will be Redirected to %s\n", cfg.ProgramName, cfg.RelayIp)
 
-	flowHandle, err := godivert.New("tcp", godivert.LayerFlow, 0, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer flowHandle.Close()
-	go listenFlows(flowHandle)
-
-	filter := "tcp"
-	netHandle, err := godivert.New(filter, godivert.LayerNetwork, 0, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer netHandle.Close()
-
-	packet := make([]byte, 65535)
-	var addr godivert.Address
-
-	for {
-		readLen, err := netHandle.Recv(packet, &addr)
-		if err != nil {
-			log.Printf("Error receiving packet: %s", err)
-			continue
-		}
-
-		if readLen < 20 {
-			netHandle.Send(packet[:readLen], &addr)
-			continue
-		}
-
-		forwarder.Forward(cfg, readLen, packet[:readLen], netHandle, &addr)
-	}
+	go interceptor.StartInterceptor(cfg)
+	forwarder.StartForwarder(cfg)
 }

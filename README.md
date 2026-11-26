@@ -2,10 +2,7 @@
 
 ## Status
 TODO:
-- 6-byte header carrying the original IP + Port
-- Multi-connection support
 - Revalidate with real game traffic
-- Dynamically detect IP based on Program Name
 
 ## Measurements
 
@@ -50,6 +47,5 @@ echo "HELLO SERVER" | ncat -w 3 <game-server-ip> <game-server-port>
 Expected:
 ```shell
 VPS logs
-[date : time] connection from <your-ip>
-[date : time] read N bytes: hex
+Relaying Your PC IP <-> Game Server IP
 ```

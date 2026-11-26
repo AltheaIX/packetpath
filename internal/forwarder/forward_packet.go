@@ -6,19 +6,10 @@ import (
 	"net"
 	"packetpath/internal/config"
 	"packetpath/internal/header"
-	"sync"
+	"packetpath/internal/interceptor"
 
 	"github.com/one-api/godivert"
 )
-
-type ConnKey struct {
-	SrcIP   [4]byte
-	SrcPort uint16
-	DstIP   [4]byte
-	DstPort uint16
-}
-
-var headerSent sync.Map
 
 type PacketContext struct {
 	IHL          int
@@ -30,45 +21,41 @@ type PacketContext struct {
 	Cfg          config.Config
 }
 
-func makeKey(packet []byte, ihl int) ConnKey {
-	var k ConnKey
-	copy(k.SrcIP[:], packet[12:16])
-	k.SrcPort = binary.BigEndian.Uint16(packet[ihl : ihl+2])
-	copy(k.DstIP[:], packet[16:20])
-	k.DstPort = binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
-	return k
-}
-
-func reverseKey(packet []byte, ihl int) ConnKey {
-	var k ConnKey
-	copy(k.SrcIP[:], packet[16:20])
-	k.SrcPort = binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
-	copy(k.DstIP[:], packet[12:16])
-	k.DstPort = binary.BigEndian.Uint16(packet[ihl : ihl+2])
-	return k
-}
-
 func processOutbound(
 	ctx *PacketContext,
 ) {
-	dstIp := ctx.Packet[16:20]
-	ip := fmt.Sprintf("%d.%d.%d.%d", dstIp[0], dstIp[1], dstIp[2], dstIp[3])
-	if ip != ctx.Cfg.RedirectIp {
+	srcIP := ctx.Packet[12:16]
+	srcPort := binary.BigEndian.Uint16(ctx.Packet[ctx.IHL : ctx.IHL+2])
+
+	dstIP := ctx.Packet[16:20]
+	dstPort := binary.BigEndian.Uint16(ctx.Packet[ctx.IHL+2 : ctx.IHL+4])
+
+	srcIPStr := fmt.Sprintf("%d.%d.%d.%d", srcIP[0], srcIP[1], srcIP[2], srcIP[3])
+	dstIPStr := fmt.Sprintf("%d.%d.%d.%d", dstIP[0], dstIP[1], dstIP[2], dstIP[3])
+
+	socketKey := interceptor.MakeSocketProgramKey(srcIPStr, srcPort, dstIPStr, dstPort)
+	if interceptor.ResolveProgramName(socketKey) == "unknown" {
 		ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
 		return
 	}
 
+	dstIpCopy := make([]byte, len(dstIP))
+	copy(dstIpCopy, dstIP)
+	orig := MakeOriginTargetKey(dstIpCopy, dstPort)
+
+	OriginTargetMap.Store(srcPort, orig)
+
 	flags := ctx.Packet[ctx.IHL+13]
 	isPSH := flags&0x08 != 0
 
-	key := makeKey(ctx.Packet, ctx.IHL)
-	_, alreadyHeaderized := headerSent.Load(key)
+	key := header.MakeKey(ctx.Packet, ctx.IHL, header.OutboundFlag)
+	_, alreadyHeaderized := header.HeaderSent.Load(key)
 
 	if isPSH && !alreadyHeaderized {
 		err := header.ApplyHeader(
 			&ctx.Packet,
-			net.ParseIP(ctx.Cfg.RedirectIp).To4(),
-			ctx.Cfg.RedirectPort,
+			dstIpCopy,
+			dstPort,
 			ctx.IHL,
 			ctx.TcpHeaderLen,
 		)
@@ -78,7 +65,7 @@ func processOutbound(
 			return
 		}
 
-		headerSent.Store(key, true)
+		header.HeaderSent.Store(key, true)
 	} else if alreadyHeaderized {
 		header.CalcHeaderNumber(ctx.Packet, ctx.IHL, header.CalculateSeqNum)
 	}
@@ -87,7 +74,7 @@ func processOutbound(
 	isFIN := flags&0x01 != 0
 
 	if isRST || isFIN {
-		headerSent.Delete(key)
+		header.HeaderSent.Delete(key)
 	}
 
 	newIP := net.ParseIP(ctx.Cfg.RelayIp).To4()
@@ -112,11 +99,19 @@ func processInbound(
 		return
 	}
 
-	copy(ctx.Packet[12:16], net.ParseIP(ctx.Cfg.RedirectIp).To4())
-	binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL:ctx.IHL+2], ctx.Cfg.RedirectPort)
+	dstPort := binary.BigEndian.Uint16(ctx.Packet[ctx.IHL+2 : ctx.IHL+4])
+	val, ok := OriginTargetMap.Load(dstPort)
+	if !ok {
+		ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
+		return
+	}
+	orig := val.(OriginTargetKey)
 
-	key := reverseKey(ctx.Packet, ctx.IHL)
-	_, wasHeaderized := headerSent.Load(key)
+	copy(ctx.Packet[12:16], orig.Ip)
+	binary.BigEndian.PutUint16(ctx.Packet[ctx.IHL:ctx.IHL+2], orig.Port)
+
+	key := header.MakeKey(ctx.Packet, ctx.IHL, header.InboundFlag)
+	_, wasHeaderized := header.HeaderSent.Load(key)
 	if wasHeaderized {
 		header.CalcHeaderNumber(ctx.Packet, ctx.IHL, header.CalculateAckNum)
 	}
@@ -129,7 +124,7 @@ func processInbound(
 	ctx.Conn.Send(ctx.Packet[:ctx.ReadLen], ctx.Addr)
 }
 
-func Forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Divert, addr *godivert.Address) {
+func forward(cfg config.Config, readLen uint32, packet []byte, conn *godivert.Divert, addr *godivert.Address) {
 	ihl := int(packet[0]&0x0f) * 4
 
 	if ihl < 20 || int(readLen) < ihl {

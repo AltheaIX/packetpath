@@ -36,7 +36,11 @@ func main() {
 			origPort := binary.BigEndian.Uint16(header[4:6])
 			fmt.Printf("Relaying %s <-> %s\n", c.RemoteAddr(), origIp)
 
-			server, _ := net.Dial("tcp", fmt.Sprintf("%s:%d", origIp.String(), origPort))
+			server, err := net.Dial("tcp", fmt.Sprintf("%s:%d", origIp.String(), origPort))
+			if err != nil {
+				log.Printf("Failed to dial upstream %s:%d: %v\n", origIp.String(), origPort, err)
+				return
+			}
 			defer server.Close()
 
 			go io.Copy(server, c)

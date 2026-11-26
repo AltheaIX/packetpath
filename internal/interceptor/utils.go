@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"fmt"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
@@ -40,4 +41,8 @@ func GetProcessName(pid uint32) string {
 		}
 	}
 	return path
+}
+
+func isLoopbackIPv4(ip string) bool {
+	return ip == "" || ip == "0.0.0.0" || strings.HasPrefix(ip, "127.")
 }
